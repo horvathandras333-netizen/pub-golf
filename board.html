@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Leaderboard · Pub Golf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+  body{padding:2.4vw 2.4vw 40px}
+  .bd-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:2vw;align-items:start}
+  @media (max-width:800px){.bd-grid{grid-template-columns:1fr}}
+  .bd-head{display:flex;justify-content:space-between;align-items:flex-end;gap:2vw;margin-bottom:1.6vw}
+  .bd-head h1{font-size:clamp(40px,6vw,96px)}
+  .bd-head .sub-h{font-size:clamp(12px,1.2vw,18px)}
+  .big .lb-row{padding:clamp(10px,1.1vw,18px) clamp(12px,1.4vw,22px)}
+  .big .lb-pos{font-size:clamp(22px,2.4vw,40px);width:3em}
+  .big .lb-name{font-size:clamp(16px,1.9vw,30px)}
+  .big .lb-name .thru{font-size:clamp(11px,1vw,15px)}
+  .big .lb-topar{font-size:clamp(22px,2.6vw,44px);min-width:3em}
+  .big .lb-tot{font-size:clamp(12px,1.1vw,17px);min-width:5em}
+  .now-card .bd{padding:clamp(16px,1.6vw,26px)}
+  .now-card h2{font-size:clamp(24px,2.6vw,44px)}
+  .now-card p{font-size:clamp(14px,1.2vw,19px);margin-top:6px}
+  .qr{background:#fff;border-radius:10px;padding:clamp(10px,1vw,16px);display:flex;gap:16px;align-items:center}
+  .qr svg{width:clamp(110px,11vw,190px);height:auto;flex:none}
+  .qr p{font-size:clamp(13px,1.1vw,18px)}
+  .qr b{display:block;font-family:"Anton",sans-serif;font-size:clamp(20px,2vw,32px);font-weight:400;text-transform:uppercase}
+  .ticker{background:var(--brass);color:var(--ink);border-radius:10px;padding:clamp(12px,1.2vw,20px);font-size:clamp(16px,1.5vw,24px);font-weight:700;margin-bottom:12px}
+  .ticker small{display:block;font-family:"DM Mono",monospace;font-size:.55em;letter-spacing:.16em;text-transform:uppercase;font-weight:500}
+</style>
+</head>
+<body>
+<main id="app" aria-live="polite"></main>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="assets/core.js"></script>
+<script>
+(function () {
+'use strict';
+const { esc, fmtPar, parClass } = PG;
+const app = document.getElementById('app');
+const joinUrl = location.origin + location.pathname.replace(/board(\.html)?$/, '') + (PG.demo ? '?demo=1' : '');
+
+function qrSvg() {
+  try { const q = qrcode(0, 'M'); q.addData(joinUrl); q.make(); return q.createSvgTag(6, 2); } catch (e) { return ''; }
+}
+
+function render(st) {
+  const g = st.game;
+  if (g.status === 'draft' || !st.holes.length) {
+    app.innerHTML = '<section class="panel" style="max-width:900px;margin:8vh auto"><div class="hero" style="padding:6vw"><div class="eyebrow">Pub Golf</div><h1 style="font-size:clamp(48px,9vw,140px)">Pub <span>Golf</span></h1><p class="sub-h">Coming soon.</p></div></section>';
+    return;
+  }
+  const rows = PG.leaderboard(st), cur = st.holes.find(h => h.id === g.current), ci = PG.holeIndex(st, g.current), bc = PG.latestBroadcast(st);
+  app.innerHTML =
+    '<header class="bd-head"><div><div class="eyebrow">' + (g.status === 'finished' ? 'Final results' : 'Live leaderboard') + (g.date ? ' · ' + esc(PG.fmtDate(g.date)) : '') + '</div><h1>' + esc(g.name) + '</h1></div>' +
+    '<p class="sub-h">' + st.holes.length + ' holes · par ' + PG.coursePar(st) + ' · ' + st.players.length + ' players' + (g.settings.lastOrders && g.status === 'live' ? ' · last orders ' + g.settings.lastOrders : '') + '</p></header>' +
+    '<div class="bd-grid"><section class="panel big">' + (rows.length ? rows.slice(0, 16).map(r => '<div class="lb-row' + (r.pos === 1 && r.thru ? ' lead' : '') + '">' +
+      '<span class="lb-pos">' + (r.thru ? (r.tie ? 'T' : '') + r.pos : '–') + '</span><span class="lb-name">' + esc(r.p.name) + '<span class="thru">' + (r.thru === st.holes.length ? 'Finished' : 'Thru ' + r.thru) + '</span></span>' +
+      '<span class="lb-topar ' + parClass(r.toPar) + '">' + (r.thru ? fmtPar(r.toPar) : '') + '</span><span class="lb-tot">' + (r.thru ? r.total + ' shots' : '') + '</span></div>').join('') +
+      (rows.length > 16 ? '<p class="empty">+ ' + (rows.length - 16) + ' more</p>' : '') : '<p class="empty">Scan the code to join.</p>') + '</section>' +
+    '<aside>' + (bc ? '<div class="ticker"><small>From the organiser</small>' + esc(bc.body) + '</div>' : '') +
+    (cur && g.status === 'live' ? '<section class="panel now-card"><div class="hero" style="padding:clamp(14px,1.4vw,22px)"><div class="eyebrow">Now playing · hole ' + (ci + 1) + ' of ' + st.holes.length + '</div><h2 style="color:#fdfaf0">' + esc(cur.venue) + '</h2></div>' +
+      '<div class="bd"><p><b>' + esc(cur.drink || 'Any drink') + '</b>' + (cur.soft ? ' or ' + esc(cur.soft) : '') + ' · par ' + cur.par + '</p>' +
+      (cur.mode !== 'none' ? '<p><span class="tag">' + PG.MODE_TAG[cur.mode] + '</span>' + esc(cur.activity) + '</p>' : '') +
+      (st.holes[ci + 1] ? '<p class="muted">Next: ' + esc(st.holes[ci + 1].venue) + '</p>' : '<p class="muted">Final hole</p>') + '</div></section>' : '') +
+    (g.status === 'live' ? '<div class="qr">' + qrSvg() + '<p><b>Join the round</b>Scan with your phone camera.<br><span class="muted" style="word-break:break-all">' + esc(joinUrl) + '</span></p></div>' : '') +
+    '</aside></div>';
+}
+
+PG.store.subscribe(render);
+PG.store.get().then(render);
+PG.liveStrip();
+})();
+</script>
+</body>
+</html>

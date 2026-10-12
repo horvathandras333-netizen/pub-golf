@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#123c2a">
+<meta name="robots" content="noindex">
+<title>Admin · Pub Golf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+  .hole-ed{border-bottom:1px solid var(--line)}
+  .hole-ed:last-child{border-bottom:none}
+  .hole-ed>.hole-row{cursor:pointer}
+  .hole-ed.open>.hole-row{background:var(--felt);color:var(--card)}
+  .hole-ed.open>.hole-row .dr,.hole-ed.open>.hole-row .hole-par{color:#cfe0d5}
+  .hole-ed.open>.hole-row .hole-par b{color:#fff}
+  .hole-form{padding:16px;background:var(--card)}
+  .hole-form .tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .hole-form .tools .btn{flex:1;min-width:90px}
+  .chev{font-family:"DM Mono",monospace;font-size:12px;color:var(--ink-soft);flex:none}
+  .live-holes .hole-row{cursor:default}
+  .mini{display:flex;gap:6px;flex:none}
+  .mini button{min-width:44px;min-height:40px;border-radius:8px;border:1.5px solid var(--line);background:var(--paper);cursor:pointer;font-family:"DM Mono",monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:0 8px}
+  .mini button.on{background:var(--flag);border-color:var(--flag);color:#fff}
+  .mini button.cur{background:var(--felt);border-color:var(--felt);color:#fff}
+  .status-seg{display:flex;gap:4px;background:var(--card-2);padding:4px;border-radius:9px}
+  .status-seg button{flex:1;border:none;background:none;padding:12px 4px;border-radius:6px;cursor:pointer;font-family:"DM Mono",monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
+  .status-seg button.on{background:var(--flag);color:#fff}
+  .status-seg button.on[data-s=draft]{background:#8b8670}
+  .status-seg button.on[data-s=finished]{background:var(--felt)}
+  .pen-ed{display:grid;grid-template-columns:1fr 70px 44px;gap:6px;margin-bottom:6px}
+  .pen-ed input{padding:10px;border:1.5px solid var(--line);border-radius:8px;background:var(--paper);font-size:15px;min-width:0}
+  .pen-ed button{border:1.5px solid var(--line);border-radius:8px;background:var(--paper);cursor:pointer}
+  .links{display:grid;gap:8px}
+  .links a{display:flex;justify-content:space-between;gap:10px;padding:12px;border:1.5px solid var(--line);border-radius:8px;background:var(--paper);text-decoration:none;font-size:14px;overflow:hidden}
+  .links a span:last-child{font-family:"DM Mono",monospace;font-size:12px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .danger{border-top:1px dashed var(--line);margin-top:18px;padding-top:14px}
+  .p-act{display:flex;gap:4px;justify-content:flex-end}
+  .p-act button{border:none;background:none;cursor:pointer;font-size:13px;padding:6px;border-radius:6px}
+  .p-act button:hover{background:var(--paper)}
+</style>
+</head>
+<body>
+<main class="wrap" id="app"></main>
+<script src="assets/core.js"></script>
+<script>
+(function () {
+'use strict';
+const { esc, fmtPar, parClass } = PG, S = PG.store;
+const app = document.getElementById('app');
+const PIN_KEY = S.key + ':admin';
+let st = null, PIN = null, tab = 'course', openHole = null;
+try { PIN = sessionStorage.getItem(PIN_KEY); tab = sessionStorage.getItem('pg_admin_tab') || 'course'; } catch (e) {}
+
+/* Unsaved form edits pause live re-renders so typing is never wiped. */
+const dirty = () => !!app.querySelector('form[data-dirty]');
+app.addEventListener('input', ev => { const f = ev.target.closest('form.track'); if (f) f.dataset.dirty = '1'; });
+
+async function act(fn, ok) {
+  try { const r = await fn(); if (ok) PG.toast(ok); return r; }
+  catch (e) { PG.toast(PG.errText(e)); if (e.message === 'bad_pin') signOut(); throw e; }
+}
+function signOut() { PIN = null; try { sessionStorage.removeItem(PIN_KEY); } catch (e) {} render(); }
+
+function render(force) {
+  if (!st) return;
+  if (!force && dirty()) return;
+  if (!PIN) return gate();
+  const g = st.game;
+  const tabs = [['course', 'Course'], ['live', 'Live'], ['scores', 'Scores'], ['settings', 'Settings'], ['tools', 'Tools']];
+  app.innerHTML =
+    '<header class="topbar"><div class="who"><div class="course">Organiser · ' + ({ draft: 'Draft, hidden', live: 'Live', finished: 'Finished' })[g.status] + '</div>' +
+    '<div class="pname">' + esc(g.name) + '</div><div class="meta">' + st.holes.length + ' holes · par ' + PG.coursePar(st) + ' · ' + st.players.length + ' players</div></div>' +
+    '<button type="button" data-a="signout">Lock</button></header>' +
+    '<nav class="tabs" role="tablist">' + tabs.map(t => '<button type="button" role="tab" data-t="' + t[0] + '" aria-selected="' + (tab === t[0]) + '" class="' + (tab === t[0] ? 'active' : '') + '">' + t[1] + '</button>').join('') + '</nav>' +
+    ({ course, live, scores, settings, tools })[tab]();
+}
+
+/* ---------- PIN gate ---------- */
+function gate() {
+  const first = !st.hasPin;
+  app.innerHTML = '<section class="panel"><div class="hero"><div class="eyebrow">Organiser</div><h1>Pub <span>Golf</span></h1>' +
+    '<p class="sub-h">' + (first ? 'First time here: choose an admin PIN. Only you should know it.' : 'Enter your admin PIN.') + '</p></div>' +
+    '<form class="bd" id="gf" novalidate><div class="field"><label for="pin">' + (first ? 'New PIN (6–12 digits)' : 'PIN') + '</label>' +
+    '<input id="pin" type="password" inputmode="numeric" autocomplete="' + (first ? 'new-password' : 'current-password') + '" maxlength="12" required></div>' +
+    (first ? '<div class="field"><label for="pin2">Repeat PIN</label><input id="pin2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12" required></div>' : '') +
+    '<button class="btn" type="submit">' + (first ? 'Set PIN' : 'Unlock') + '</button><p class="err" id="ge"></p></form></section>';
+  const f = document.getElementById('gf');
+  f.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const p = document.getElementById('pin').value.trim(), er = document.getElementById('ge'), b = f.querySelector('button');
+    er.textContent = '';
+    if (first && p !== document.getElementById('pin2').value.trim()) { er.textContent = 'PINs don’t match.'; return; }
+    b.disabled = true;
+    try { await (first ? S.initPin(p) : S.checkPin(p)); PIN = p; try { sessionStorage.setItem(PIN_KEY, p); } catch (e) {} st = await S.get(); render(true); }
+    catch (e) { er.textContent = PG.errText(e); b.disabled = false; }
+  });
+  setTimeout(() => { const i = document.getElementById('pin'); i && i.focus(); }, 50);
+}
+
+/* ---------- Course: venues, drinks, activities ---------- */
+function opts(list, val, labelFn) {
+  return list.map(x => { const v = typeof x === 'string' ? x : x.name; return '<option value="' + esc(v) + '"' + (v === val ? ' selected' : '') + '>' + esc(labelFn ? labelFn(x) : v) + '</option>'; }).join('');
+}
+/* A select of preset choices plus "Custom…" that reveals a free-text box. */
+function choice(name, label, list, val, opt) {
+  const names = list.map(x => typeof x === 'string' ? x : x.name), custom = !!val && !names.includes(val);
+  return '<div class="field"><label for="' + name + '">' + label + '</label><select id="' + name + '" data-choice="' + name + '">' +
+    (opt.none ? '<option value=""' + (!val ? ' selected' : '') + '>' + opt.none + '</option>' : '') +
+    opts(list, custom ? null : val, opt.fmt) + '<option value="__custom"' + (custom ? ' selected' : '') + '>Custom…</option></select>' +
+    '<input name="' + name + '" data-custom="' + name + '" value="' + esc(custom ? val : '') + '" maxlength="' + (opt.max || 80) + '" placeholder="Type your own"' + (custom ? '' : ' hidden') + ' style="margin-top:6px"></div>';
+}
+function holeForm(h) {
+  const P = st.game.presets;
+  return '<form class="hole-form track" data-id="' + esc(h.id || '') + '" novalidate>' +
+    '<div class="field"><label for="venue">Venue *</label><input id="venue" name="venue" value="' + esc(h.venue) + '" maxlength="60" required placeholder="e.g. The Red Lion"></div>' +
+    '<div class="row3"><div class="field"><label for="address">Address</label><input id="address" name="address" value="' + esc(h.address) + '" maxlength="120" placeholder="Street, postcode"></div>' +
+    '<div class="field"><label for="arrive">Arrive by</label><input id="arrive" name="arrive" type="time" value="' + esc(h.arrive) + '"></div></div>' +
+    '<div class="field"><label for="notes">Notes for players</label><input id="notes" name="notes" value="' + esc(h.notes) + '" maxlength="200" placeholder="e.g. Upstairs bar, cash only"></div>' +
+    '<div class="row3">' + choice('drink', 'Drink', P.drinks, h.drink, { fmt: d => d.name + ' (par ' + d.par + ')', none: 'Any drink' }) +
+    '<div class="field"><label for="par">Par</label><input id="par" name="par" type="number" inputmode="numeric" min="1" max="10" value="' + h.par + '"></div></div>' +
+    choice('soft', 'Soft option (same par)', P.softs, h.soft, { none: 'None' }) +
+    choice('activity', 'Activity', P.activities, h.activity, { none: 'No activity', max: 200 }) +
+    '<div class="row3"><div class="field"><label for="mode">Activity rule</label><select id="mode" name="mode">' +
+    Object.entries(PG.MODES).filter(([k]) => k !== 'none').map(([k, v]) => '<option value="' + k + '"' + (h.mode === k || (h.mode === 'none' && k === 'forfeit') ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></div>' +
+    '<div class="field"><label for="strokes">Skip +</label><input id="strokes" name="strokes" type="number" min="1" max="5" value="' + h.strokes + '"></div></div>' +
+    '<div class="tools"><button class="btn" type="submit">Save hole</button>' +
+    (h.id ? '<button class="btn ghost" type="button" data-a="up">↑ Up</button><button class="btn ghost" type="button" data-a="down">↓ Down</button><button class="btn ghost" type="button" data-a="del">Delete</button>'
+      : '<button class="btn ghost" type="button" data-a="cancel">Cancel</button>') + '</div></form>';
+}
+const blankHole = () => { const d = st.game.presets.drinks[0]; return { id: '', venue: '', address: '', arrive: '', notes: '', drink: d ? d.name : '', soft: st.game.presets.softs[0] || '', par: d ? d.par : 4, activity: '', mode: 'forfeit', strokes: 1 }; };
+function course() {
+  const rows = st.holes.map((h, i) => '<div class="hole-ed' + (openHole === h.id ? ' open' : '') + '">' +
+    '<div class="hole-row" role="button" tabindex="0" data-open="' + h.id + '" aria-expanded="' + (openHole === h.id) + '"><span class="hole-no">' + (i + 1) + '</span>' +
+    '<span class="hole-mid"><span class="nm">' + esc(h.venue) + '</span><span class="dr">' + esc(h.drink || 'Any drink') + (h.mode !== 'none' ? ' · ' + PG.MODE_TAG[h.mode] : '') + '</span></span>' +
+    '<span class="hole-par">par<b>' + h.par + '</b></span><span class="chev">' + (openHole === h.id ? '▲' : '▼') + '</span></div>' +
+    (openHole === h.id ? holeForm(h) : '') + '</div>').join('');
+  const adding = openHole === 'new';
+  return '<section class="panel">' + (rows || (adding ? '' : '<p class="empty">No holes yet. Add your first pub below.<br>Players see a blank page until you go live.</p>')) +
+    (adding ? '<div class="hole-ed open"><div class="hole-row"><span class="hole-no">' + (st.holes.length + 1) + '</span><span class="hole-mid"><span class="nm">New hole</span></span></div>' + holeForm(blankHole()) + '</div>' : '') +
+    '</section>' + (adding || st.holes.length >= 18 ? '' : '<button class="btn" type="button" data-a="add">+ Add hole ' + (st.holes.length + 1) + '</button>') +
+    '<p class="foot-note">Drink, soft option and activity lists are set in Settings · up to 18 holes</p>';
+}
+function readHole(f) {
+  const val = n => { const s = f.querySelector('[data-choice="' + n + '"]'); return s.value === '__custom' ? f.querySelector('[data-custom="' + n + '"]').value : s.value; };
+  const fd = new FormData(f);
+  return { id: f.dataset.id || undefined, venue: fd.get('venue'), address: fd.get('address'), arrive: fd.get('arrive'), notes: fd.get('notes'),
+    drink: val('drink'), soft: val('soft'), activity: val('activity'), par: fd.get('par'), mode: fd.get('mode'), strokes: fd.get('strokes') };
+}
+
+/* ---------- Live control ---------- */
+function live() {
+  const g = st.game, base = location.origin + location.pathname.replace(/admin(\.html)?$/, '');
+  const demo = PG.demo ? '?demo=1' : '';
+  const bc = PG.latestBroadcast(st);
+  return '<section class="panel"><div class="bd"><h3>Round status</h3><div class="status-seg">' +
+    [['draft', 'Draft'], ['live', 'Live'], ['finished', 'Finished']].map(([k, v]) => '<button type="button" data-s="' + k + '" class="' + (g.status === k ? 'on' : '') + '">' + v + '</button>').join('') + '</div>' +
+    '<p class="muted" style="margin-top:8px">' + ({ draft: 'Players see a blank page. Set up the course, then go Live.', live: 'Players can join and score open holes.', finished: 'Scoring closed. Players see final results.' })[g.status] + '</p></div></section>' +
+    (st.holes.length ? '<section class="panel"><div class="bd" style="padding-bottom:6px"><h3>Holes</h3><div class="btns"><button class="btn green sm" type="button" data-a="prev">← Previous</button><button class="btn sm" type="button" data-a="next">Next hole →</button></div>' +
+      '<p class="muted" style="margin:8px 0 0">Current = where the group is now' + (g.settings.noAhead ? '. Players can only score up to it (no playing ahead is on).' : '.') + ' Lock stops scoring on a hole.</p></div>' +
+      '<div class="live-holes">' + st.holes.map((h, i) => '<div class="hole-row' + (g.current === h.id ? ' now' : '') + '"><span class="hole-no">' + (i + 1) + '</span><span class="hole-mid"><span class="nm">' + esc(h.venue) + '</span><span class="dr">' +
+        Object.keys(st.scores).filter(pid => st.scores[pid][h.id]).length + ' / ' + st.players.length + ' scored</span></span>' +
+        '<span class="mini"><button type="button" data-cur="' + h.id + '" class="' + (g.current === h.id ? 'cur' : '') + '" aria-pressed="' + (g.current === h.id) + '">' + (g.current === h.id ? 'Now' : 'Set') + '</button>' +
+        '<button type="button" data-lock="' + h.id + '" class="' + (h.locked ? 'on' : '') + '" aria-pressed="' + h.locked + '">' + (h.locked ? 'Locked' : 'Lock') + '</button></span></div>').join('') + '</div></section>' : '') +
+    '<section class="panel"><form class="bd track" id="bcf"><h3>Message everyone</h3><div class="field"><label for="bc">Shows as a banner on every phone</label><textarea id="bc" maxlength="200" style="min-height:70px" placeholder="e.g. Moving to The Crown in 10 minutes"></textarea></div>' +
+    '<div class="btns"><button class="btn" type="submit">Send</button>' + (bc ? '<button class="btn ghost" type="button" data-a="bcclear">Clear current</button>' : '') + '</div>' +
+    (bc ? '<p class="muted" style="margin-top:8px">Showing now: “' + esc(bc.body) + '”</p>' : '') + '</form></section>' +
+    '<section class="panel"><div class="bd"><h3>Share</h3><div class="links">' +
+    '<a href="' + esc(base + demo) + '" target="_blank" rel="noopener"><span>Player page</span><span>' + esc(base + demo) + '</span></a>' +
+    '<a href="' + esc(base + 'board.html' + demo) + '" target="_blank" rel="noopener"><span>Big screen (TV)</span><span>' + esc(base + 'board.html' + demo) + '</span></a></div>' +
+    '<button class="btn ghost" type="button" data-a="copy" style="margin-top:10px">Copy player link</button></div></section>';
+}
+
+/* ---------- Scores ---------- */
+function scores() {
+  if (!st.players.length) return '<section class="panel"><p class="empty">No players yet. They appear here when they join.</p></section>';
+  const rows = PG.leaderboard(st);
+  return '<section class="panel"><div class="res-tools"><button class="btn ghost sm" type="button" data-a="csv">Download CSV</button></div><div class="res-scroll"><table class="res"><thead><tr><th class="nm">Player</th>' +
+    st.holes.map((h, i) => '<th title="' + esc(h.venue) + '">' + (i + 1) + '<br>p' + h.par + '</th>').join('') + '<th>Tot</th><th>+/−</th><th></th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td class="nm">' + (r.thru ? (r.tie ? 'T' : '') + r.pos + '. ' : '') + esc(r.p.name) + '</td>' +
+      r.cells.map((c, i) => '<td><button type="button" class="cell" data-p="' + r.p.id + '" data-h="' + st.holes[i].id + '" aria-label="Edit ' + esc(r.p.name) + ' hole ' + (i + 1) + '">' +
+        (c.v == null ? '·' : c.e.result === 'forfeit' ? 'F' + c.v : c.e.result === 'dnf' ? 'X' + c.v : c.v) + '</button></td>').join('') +
+      '<td class="tot">' + (r.thru ? r.total : '') + '</td><td class="' + parClass(r.toPar) + '">' + (r.thru ? fmtPar(r.toPar) : '') + '</td>' +
+      '<td><span class="p-act"><button type="button" data-ren="' + r.p.id + '" aria-label="Rename ' + esc(r.p.name) + '">✎</button><button type="button" data-rm="' + r.p.id + '" aria-label="Remove ' + esc(r.p.name) + '">✕</button></span></td></tr>').join('') +
+    '</tbody></table></div><p class="muted" style="padding:10px 14px">Tap any cell to fix a score. Admin edits work even on locked holes. F = forfeit, X = didn’t finish.</p></section>';
+}
+
+/* ---------- Settings ---------- */
+function settings() {
+  const g = st.game, s = g.settings, P = g.presets;
+  return '<form class="track" id="sf" novalidate>' +
+    '<section class="panel"><div class="bd"><h3>Game</h3><div class="row3"><div class="field"><label for="gname">Name</label><input id="gname" name="name" maxlength="40" value="' + esc(g.name) + '"></div>' +
+    '<div class="field"><label for="gdate">Date</label><input id="gdate" name="date" type="date" value="' + esc(g.date) + '"></div></div>' +
+    '<div class="row2"><div class="field"><label for="dnf">Didn’t finish = par +</label><input id="dnf" name="dnf" type="number" min="0" max="5" value="' + s.dnf + '"></div>' +
+    '<div class="field"><label for="lo">Last orders (optional)</label><input id="lo" name="lastOrders" type="time" value="' + esc(s.lastOrders) + '"></div></div>' +
+    '<label class="tick"><input type="checkbox" name="noAhead"' + (s.noAhead ? ' checked' : '') + '> No playing ahead: players can only score up to the current hole</label></div></section>' +
+    '<section class="panel"><div class="bd"><h3>Penalty strokes</h3><div id="pens">' + g.penalties.map(penRow).join('') + '</div>' +
+    '<button class="btn ghost sm" type="button" data-a="addpen">+ Add penalty</button></div></section>' +
+    '<section class="panel"><div class="bd"><h3>Rules shown to players</h3>' +
+    '<div class="field"><label for="how">How to play (one per line)</label><textarea id="how" name="how">' + esc(g.rules.how.join('\n')) + '</textarea></div>' +
+    '<div class="field"><label for="eti">Etiquette (one per line)</label><textarea id="eti" name="etiquette">' + esc(g.rules.etiquette.join('\n')) + '</textarea></div>' +
+    '<button class="btn ghost sm" type="button" data-def="rules">Restore default rules</button></div></section>' +
+    '<section class="panel"><div class="bd"><h3>Choice lists for the course editor</h3>' +
+    '<div class="field"><label for="drinks">Drinks: name | par (one per line)</label><textarea id="drinks" name="drinks" style="min-height:180px">' + esc(P.drinks.map(d => d.name + ' | ' + d.par).join('\n')) + '</textarea></div>' +
+    '<div class="field"><label for="softs">Soft options (one per line)</label><textarea id="softs" name="softs">' + esc(P.softs.join('\n')) + '</textarea></div>' +
+    '<div class="field"><label for="acts">Activities (one per line)</label><textarea id="acts" name="activities" style="min-height:180px">' + esc(P.activities.join('\n')) + '</textarea></div>' +
+    '<button class="btn ghost sm" type="button" data-def="lists">Restore default lists</button>' +
+    '<p class="muted" style="margin-top:8px">Changing a list doesn’t change holes you’ve already saved.</p></div></section>' +
+    '<section class="panel"><div class="bd"><h3>Promo card (optional)</h3><label class="tick"><input type="checkbox" name="promoOn"' + (s.promo.on ? ' checked' : '') + '> Show a “now playing” Spotify card under the player page</label>' +
+    '<div class="row2"><div class="field"><label for="pt">Track</label><input id="pt" name="promoTitle" maxlength="60" value="' + esc(s.promo.title) + '"></div>' +
+    '<div class="field"><label for="pa">Artist</label><input id="pa" name="promoArtist" maxlength="60" value="' + esc(s.promo.artist) + '"></div></div>' +
+    '<div class="field"><label for="pu">Link (https)</label><input id="pu" name="promoUrl" type="url" maxlength="300" value="' + esc(s.promo.url) + '"></div></div></section>' +
+    '<button class="btn" type="submit" style="position:sticky;bottom:34px;box-shadow:0 10px 24px rgba(0,0,0,.35)">Save settings</button></form>';
+}
+const penRow = p => '<div class="pen-ed" data-id="' + esc(p.id) + '"><input aria-label="Penalty" maxlength="80" value="' + esc(p.label) + '" placeholder="e.g. Spilling your drink">' +
+  '<input aria-label="Strokes" type="number" min="1" max="5" value="' + p.strokes + '"><button type="button" data-a="rmpen" aria-label="Remove penalty">✕</button></div>';
+const lines = t => String(t || '').split('\n').map(x => x.trim()).filter(Boolean);
+
+/* ---------- Tools ---------- */
+function tools() {
+  return '<section class="panel"><form class="bd" id="pinf" novalidate><h3>Change PIN</h3>' +
+    '<div class="field"><label for="op">Current PIN</label><input id="op" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12"></div>' +
+    '<div class="row2"><div class="field"><label for="np">New PIN</label><input id="np" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12"></div>' +
+    '<div class="field"><label for="np2">Repeat</label><input id="np2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12"></div></div>' +
+    '<button class="btn green" type="submit">Change PIN</button></form></section>' +
+    '<section class="panel"><div class="bd"><h3>Course file</h3><p class="muted" style="margin-bottom:10px">Save this course (holes, rules, penalties, lists) to a file, or load one, for example to hand a ready course to a friend.</p>' +
+    '<div class="btns"><button class="btn ghost" type="button" data-a="export">Export course</button><label class="btn ghost" for="imp">Import course</label></div>' +
+    '<input type="file" id="imp" accept="application/json,.json" hidden>' +
+    '<h3>Results</h3><button class="btn ghost" type="button" data-a="csv">Download results CSV</button>' +
+    '<div class="danger"><h3>Danger zone</h3><div class="btns"><button class="btn ghost" type="button" data-a="resetscores">Clear all scores</button><button class="btn ghost" type="button" data-a="wipe">Remove all players</button></div>' +
+    '<button class="btn ghost" type="button" data-a="factory" style="margin-top:8px">Factory reset (everything, incl. PIN)</button></div></div></section>';
+}
+
+/* ---------- events ---------- */
+app.addEventListener('click', async ev => {
+  const t = ev.target.closest('[data-t]');
+  if (t) {
+    if (dirty() && !confirm('Discard unsaved changes?')) return;
+    tab = t.dataset.t; openHole = null; try { sessionStorage.setItem('pg_admin_tab', tab); } catch (e) {} return render(true);
+  }
+  const op = ev.target.closest('[data-open]');
+  if (op) {
+    if (dirty() && !confirm('Discard unsaved changes to this hole?')) return;
+    openHole = openHole === op.dataset.open ? null : op.dataset.open; render(true);
+    const f = app.querySelector('.hole-form'); f && f.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
+  const b = ev.target.closest('button'); if (!b) return;
+  const a = b.dataset.a, f = b.closest('form');
+  try {
+    if (b.dataset.s) {
+      const s = b.dataset.s;
+      if (s === st.game.status) return;
+      if (s === 'finished' && !confirm('Finish the round? Players can no longer score.')) return;
+      if (s === 'draft' && !confirm('Back to draft? Players will see a blank page.')) return;
+      await act(() => S.setStatus(PIN, s), s === 'live' ? 'Live! Players can join.' : 'Status: ' + s);
+    }
+    else if (b.dataset.cur) await act(() => S.setCurrent(PIN, b.dataset.cur));
+    else if (b.dataset.lock) { const h = st.holes.find(x => x.id === b.dataset.lock); await act(() => S.lockHole(PIN, h.id, !h.locked)); }
+    else if (b.dataset.ren) {
+      const p = st.players.find(x => x.id === b.dataset.ren), n = prompt('Rename player', p.name);
+      if (n != null && n.trim() !== p.name) await act(() => S.renamePlayer(PIN, p.id, n), 'Renamed');
+    }
+    else if (b.dataset.rm) {
+      const p = st.players.find(x => x.id === b.dataset.rm);
+      if (confirm('Remove ' + p.name + ' and all their scores?')) await act(() => S.removePlayer(PIN, p.id), 'Removed');
+    }
+    else if (b.classList.contains('cell')) {
+      const p = st.players.find(x => x.id === b.dataset.p), h = st.holes.find(x => x.id === b.dataset.h);
+      PG.sheet({ st, hole: h, who: p.name, entry: (st.scores[p.id] || {})[h.id],
+        onSave: e => act(() => S.editScore(PIN, p.id, h.id, e), 'Score saved'), onClear: () => act(() => S.editScore(PIN, p.id, h.id, null), 'Score cleared') });
+    }
+    else if (b.dataset.def === 'rules') {
+      app.querySelector('#how').value = PG.DEFAULT_RULES.how.join('\n'); app.querySelector('#eti').value = PG.DEFAULT_RULES.etiquette.join('\n'); f.dataset.dirty = '1';
+    }
+    else if (b.dataset.def === 'lists') {
+      app.querySelector('#drinks').value = PG.DEFAULT_DRINKS.map(d => d.name + ' | ' + d.par).join('\n');
+      app.querySelector('#softs').value = PG.DEFAULT_SOFTS.join('\n'); app.querySelector('#acts').value = PG.DEFAULT_ACTIVITIES.join('\n'); f.dataset.dirty = '1';
+    }
+    else switch (a) {
+      case 'signout': signOut(); break;
+      case 'add': openHole = 'new'; render(true); setTimeout(() => { const v = app.querySelector('#venue'); v && (v.focus(), v.scrollIntoView({ block: 'center' })); }, 30); break;
+      case 'cancel': openHole = null; render(true); break;
+      case 'up': case 'down': await act(() => S.moveHole(PIN, f.dataset.id, a === 'up' ? -1 : 1)); break;
+      case 'del': {
+        const h = st.holes.find(x => x.id === f.dataset.id), n = Object.values(st.scores).filter(sc => sc[h.id]).length;
+        if (confirm('Delete hole “' + h.venue + '”' + (n ? ' and ' + n + ' score(s) on it' : '') + '?')) { openHole = null; delete f.dataset.dirty; await act(() => S.deleteHole(PIN, h.id), 'Hole deleted'); }
+        break;
+      }
+      case 'prev': case 'next': {
+        const i = PG.holeIndex(st, st.game.current), j = i < 0 ? 0 : Math.min(st.holes.length - 1, Math.max(0, i + (a === 'next' ? 1 : -1)));
+        if (j !== i) await act(() => S.setCurrent(PIN, st.holes[j].id), 'Now at hole ' + (j + 1));
+        break;
+      }
+      case 'bcclear': await act(() => S.broadcast(PIN, ''), 'Message cleared'); break;
+      case 'copy': {
+        const url = location.origin + location.pathname.replace(/admin(\.html)?$/, '') + (PG.demo ? '?demo=1' : '');
+        try { await navigator.clipboard.writeText(url); PG.toast('Link copied'); } catch (e) { prompt('Copy this link', url); }
+        break;
+      }
+      case 'addpen': app.querySelector('#pens').insertAdjacentHTML('beforeend', penRow({ id: PG.uid(), label: '', strokes: 1 })); f.dataset.dirty = '1'; app.querySelector('#pens .pen-ed:last-child input').focus(); break;
+      case 'rmpen': b.closest('.pen-ed').remove(); f.dataset.dirty = '1'; break;
+      case 'csv': PG.download(st.game.name.replace(/\W+/g, '-') + '-results.csv', PG.resultsCsv(st), 'text/csv'); break;
+      case 'export': PG.download(st.game.name.replace(/\W+/g, '-') + '-course.json', JSON.stringify(PG.exportCourse(st), null, 2), 'application/json'); break;
+      case 'resetscores': if (confirm('Clear every score and message? Players and holes stay.')) await act(() => S.resetScores(PIN), 'Scores cleared'); break;
+      case 'wipe': if (confirm('Remove all players and their scores?')) await act(() => S.wipePlayers(PIN), 'Players removed'); break;
+      case 'factory':
+        if (prompt('This deletes the course, players, scores, settings and the PIN. Type RESET to confirm.') === 'RESET') { await act(() => S.factoryReset(PIN)); signOut(); }
+        break;
+    }
+  } catch (e) { /* act() already showed the error */ }
+});
+
+app.addEventListener('change', async ev => {
+  const s = ev.target.closest('[data-choice]');
+  if (s) {
+    const n = s.dataset.choice, f = s.closest('form'), c = f.querySelector('[data-custom="' + n + '"]');
+    c.hidden = s.value !== '__custom'; if (!c.hidden) c.focus();
+    if (n === 'drink') { const d = st.game.presets.drinks.find(x => x.name === s.value); if (d) f.querySelector('#par').value = d.par; }
+    f.dataset.dirty = '1';
+  }
+  if (ev.target.id === 'imp' && ev.target.files[0]) {
+    const file = ev.target.files[0]; ev.target.value = '';
+    if (st.holes.length && !confirm('Replace the current ' + st.holes.length + ' holes and clear all scores?')) return;
+    try { const c = JSON.parse(await file.text()); const n = await act(() => S.importCourse(PIN, c)); PG.toast('Imported ' + n + ' holes. Status set to Draft.'); }
+    catch (e) { if (e instanceof SyntaxError) PG.toast(PG.errText(new Error('bad_file'))); }
+  }
+});
+
+app.addEventListener('keydown', ev => {
+  const op = ev.target.closest('[data-open]');
+  if (op && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); op.click(); }
+});
+
+app.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const f = ev.target, b = f.querySelector('[type=submit]');
+  b && (b.disabled = true);
+  try {
+    if (f.classList.contains('hole-form')) {
+      const h = readHole(f);
+      if (!String(h.venue || '').trim()) { PG.toast('Each hole needs a venue name.'); f.querySelector('#venue').focus(); return; }
+      const saved = await act(() => S.saveHole(PIN, h), 'Hole saved');
+      delete f.dataset.dirty; openHole = h.id ? saved.id : null; render(true);
+    }
+    else if (f.id === 'bcf') {
+      const m = f.querySelector('#bc').value.trim(); if (!m) return;
+      await act(() => S.broadcast(PIN, m), 'Sent to everyone'); delete f.dataset.dirty; render(true);
+    }
+    else if (f.id === 'sf') {
+      const fd = new FormData(f);
+      const drinks = lines(fd.get('drinks')).map(l => { const m = l.split('|'); return { name: m[0].trim(), par: parseInt(m[1], 10) || 4 }; });
+      const penalties = [...f.querySelectorAll('.pen-ed')].map(r => { const i = r.querySelectorAll('input'); return { id: r.dataset.id, label: i[0].value, strokes: i[1].value }; });
+      await act(() => S.updateGame(PIN, {
+        name: fd.get('name'), date: fd.get('date'),
+        settings: { dnf: fd.get('dnf'), noAhead: fd.has('noAhead'), lastOrders: fd.get('lastOrders'),
+          promo: { on: fd.has('promoOn'), title: fd.get('promoTitle'), artist: fd.get('promoArtist'), url: fd.get('promoUrl') } },
+        rules: { how: lines(fd.get('how')), etiquette: lines(fd.get('etiquette')) },
+        penalties, presets: { drinks, softs: lines(fd.get('softs')), activities: lines(fd.get('activities')) }
+      }), 'Settings saved');
+      delete f.dataset.dirty; render(true);
+    }
+    else if (f.id === 'pinf') {
+      const o = f.querySelector('#op').value.trim(), n = f.querySelector('#np').value.trim();
+      if (n !== f.querySelector('#np2').value.trim()) { PG.toast('New PINs don’t match.'); return; }
+      await act(() => S.setPin(o, n), 'PIN changed');
+      PIN = n; try { sessionStorage.setItem(PIN_KEY, n); } catch (e) {} f.reset();
+    }
+  } catch (e) { /* shown by act() */ }
+  finally { b && b.isConnected && (b.disabled = false); }
+});
+
+window.addEventListener('beforeunload', ev => { if (dirty()) { ev.preventDefault(); ev.returnValue = ''; } });
+S.subscribe(v => { st = v; render(); });
+S.get().then(v => { st = v; render(true); });
+PG.liveStrip();
+})();
+</script>
+</body>
+</html>

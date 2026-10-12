@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#123c2a">
+<title>Pub Golf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="wrap" id="app" aria-live="polite"></main>
+<script src="assets/core.js"></script>
+<script>
+(function () {
+'use strict';
+const { esc, fmtPar, parClass } = PG;
+const app = document.getElementById('app');
+let st = null, tab = 'card', meId = PG.me.get();
+try { tab = sessionStorage.getItem('pg_tab') || 'card'; } catch (e) {}
+const dismissedKey = PG.store.key + ':dismissed';
+const getDismissed = () => { try { return localStorage.getItem(dismissedKey); } catch (e) { return null; } };
+
+function me() { return st && st.players.find(p => p.id === meId); }
+
+function render(force) {
+  if (!st) return;
+  document.title = st.game.status === 'draft' || !st.holes.length ? 'Pub Golf' : st.game.name + ' · Pub Golf';
+  if (st.game.status === 'draft' || !st.holes.length) return blank();
+  const p = me();
+  if (!p && st.game.status === 'live') {
+    /* don't wipe a name being typed when another tab changes the data */
+    if (!force && document.activeElement && document.activeElement.id === 'nm') return;
+    return join();
+  }
+  game(p);
+}
+
+/* Draft: the public page shows nothing about the course until the organiser opens it. */
+function blank() {
+  app.innerHTML = '<section class="panel"><div class="hero"><div class="eyebrow">Pub Golf</div><h1>Pub <span>Golf</span></h1>' +
+    '<p class="sub-h">The course isn’t open yet. Check back soon.</p></div></section>';
+}
+
+function join(err) {
+  const g = st.game, par = PG.coursePar(st);
+  app.innerHTML =
+    '<section class="panel"><div class="hero"><div class="eyebrow">' + (g.date ? esc(PG.fmtDate(g.date)) : 'Pub Golf') + '</div>' +
+    '<h1>' + esc(g.name) + '</h1><p class="sub-h">' + st.holes.length + ' holes · par ' + par + ' · ' + st.players.length + ' playing</p></div>' +
+    '<form class="bd" id="jf" novalidate><div class="field"><label for="nm">Your name</label>' +
+    '<input id="nm" maxlength="24" autocomplete="nickname" autocapitalize="words" required placeholder="What should the board call you?"></div>' +
+    '<button class="btn" type="submit">Tee off →</button><p class="err" id="je">' + esc(err || '') + '</p>' +
+    '<p class="muted">Already playing on another phone? Enter the same name to pick up your card.</p></form></section>';
+  const f = document.getElementById('jf');
+  f.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const name = document.getElementById('nm').value, b = f.querySelector('button');
+    b.disabled = true;
+    try { setMe((await PG.store.join(name)).id); }
+    catch (e) {
+      if (e.message === 'name_taken' && confirm('“' + name.trim() + '” is already playing. Is that you?')) {
+        try { setMe((await PG.store.join(name, true)).id); return; } catch (x) { e = x; }
+      }
+      document.getElementById('je').textContent = PG.errText(e); b.disabled = false;
+    }
+  });
+  setTimeout(() => document.getElementById('nm') && document.getElementById('nm').focus(), 50);
+}
+
+function setMe(id) { meId = id; PG.me.set(id); render(true); }
+
+function game(p) {
+  const g = st.game, rows = PG.leaderboard(st), mine = p && rows.find(r => r.p.id === p.id);
+  const cur = st.holes.find(h => h.id === g.current), bc = PG.latestBroadcast(st);
+  const tabs = [['card', 'My card'], ['board', 'Board'], ['course', 'Course'], ['rules', 'Rules']].filter(t => p || t[0] !== 'card');
+  if (!tabs.some(t => t[0] === tab)) tab = tabs[0][0];
+  let h = '<header class="topbar"><div class="who"><div class="course">' + esc(g.name) + (g.status === 'finished' ? ' · Final' : '') + '</div>' +
+    '<div class="pname">' + (p ? esc(p.name) : 'Final results') + '</div>' +
+    '<div class="meta">' + (cur && g.status === 'live' ? 'Now at hole ' + (PG.holeIndex(st, cur.id) + 1) + ': ' + esc(cur.venue) : st.holes.length + ' holes · par ' + PG.coursePar(st)) +
+    (g.settings.lastOrders && g.status === 'live' ? ' · last orders ' + g.settings.lastOrders : '') + '</div></div>' +
+    (p ? '<button type="button" id="sw">Not you?</button>' : '') + '</header>';
+  if (bc && bc.id !== getDismissed()) h += '<div class="banner" role="status"><div><b>From the organiser</b>' + esc(bc.body) + '</div><button class="x" type="button" id="bx" aria-label="Dismiss">✕</button></div>';
+  h += '<nav class="tabs" role="tablist">' + tabs.map(t => '<button type="button" role="tab" data-t="' + t[0] + '" aria-selected="' + (tab === t[0]) + '" class="' + (tab === t[0] ? 'active' : '') + '">' + t[1] + '</button>').join('') + '</nav>';
+  h += '<section class="panel">' + ({ card: () => card(p, mine), board: () => board(rows, p), course, rules })[tab]() + '</section>';
+  h += PG.promoHtml(st);
+  app.innerHTML = h;
+}
+
+function card(p, mine) {
+  const sc = st.scores[p.id] || {}, g = st.game;
+  return st.holes.map((h, i) => {
+    const e = sc[h.id], v = PG.holeScore(h, e, g), why = g.status === 'finished' ? 'finished' : PG.blockReason(st, h);
+    const tag = h.mode !== 'none' ? '<span class="tag' + (h.mode === 'bonus' ? ' green' : h.mode === 'required' ? ' brass' : '') + '">' + PG.MODE_TAG[h.mode] + '</span>' : '';
+    const cell = v != null ? '<span class="sc set">' + v + '</span>' : why && why !== 'finished' ? '<span class="sc lock" aria-label="Not open">🔒</span>' : '<span class="sc">—</span>';
+    return '<button type="button" class="hole-row' + (h.id === g.current && g.status === 'live' ? ' now' : '') + '" data-h="' + h.id + '"' + (why ? ' aria-disabled="true"' : '') + '>' +
+      '<span class="hole-no">' + (i + 1) + '</span><span class="hole-mid"><span class="nm">' + esc(h.venue) + '</span>' +
+      '<span class="dr">' + esc(h.drink || 'Any drink') + (h.soft ? ' · or ' + esc(h.soft) : '') + '</span>' +
+      (h.activity && h.mode !== 'none' ? '<span class="ff">' + tag + esc(h.activity) + '</span>' : '') + '</span>' +
+      '<span class="hole-par">par<b>' + h.par + '</b></span>' + cell + '</button>';
+  }).join('') +
+    '<div class="card-foot"><span class="lbl">Total · thru ' + mine.thru + '</span><span class="val">' + (mine.thru ? mine.total : '—') +
+    (mine.thru ? '<small class="' + parClass(mine.toPar) + '">' + fmtPar(mine.toPar) + '</small>' : '') + '</span></div>';
+}
+
+function board(rows, p) {
+  if (!rows.length) return '<p class="empty">No players yet.</p>';
+  const lb = rows.map(r => '<div class="lb-row' + (r.pos === 1 && r.thru ? ' lead' : '') + (p && r.p.id === p.id ? ' me' : '') + '">' +
+    '<span class="lb-pos">' + (r.thru ? (r.tie ? 'T' : '') + r.pos : '–') + '</span>' +
+    '<span class="lb-name">' + esc(r.p.name) + '<span class="thru">' + (r.thru === st.holes.length ? 'Finished' : 'Thru ' + r.thru) + (r.pens ? ' · ' + r.pens + ' pen' : '') + '</span></span>' +
+    '<span class="lb-topar ' + parClass(r.toPar) + '">' + (r.thru ? fmtPar(r.toPar) : '') + '</span><span class="lb-tot">' + (r.thru ? r.total + ' shots' : '') + '</span></div>').join('');
+  return lb + '<details><summary class="res-tools" style="cursor:pointer;list-style:none"><span class="btn ghost sm">Show full grid</span><span class="btn ghost sm" id="csv" role="button">Download CSV</span></summary>' + grid(rows) + '</details>';
+}
+
+function grid(rows) {
+  return '<div class="res-scroll"><table class="res"><thead><tr><th class="nm">Player</th>' + st.holes.map((h, i) => '<th title="' + esc(h.venue) + '">' + (i + 1) + '<br>p' + h.par + '</th>').join('') + '<th>Tot</th><th>+/−</th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td class="nm">' + esc(r.p.name) + '</td>' + r.cells.map(c => '<td>' + (c.v == null ? '' : c.e.result === 'forfeit' ? 'F' + c.v : c.e.result === 'dnf' ? 'X' + c.v : c.v) + '</td>').join('') +
+      '<td class="tot">' + (r.thru ? r.total : '') + '</td><td class="' + parClass(r.toPar) + '">' + (r.thru ? fmtPar(r.toPar) : '') + '</td></tr>').join('') +
+    '</tbody></table></div><p class="muted" style="padding:10px 14px">F = forfeit, X = didn’t finish.</p>';
+}
+
+function course() {
+  return st.holes.map((h, i) => '<article class="course-item"><div class="top"><span class="hole-no">' + (i + 1) + '</span><div style="flex:1;min-width:0"><h2 style="font-size:20px">' + esc(h.venue) + '</h2>' +
+    (h.address ? '<a href="' + PG.mapUrl(h) + '" target="_blank" rel="noopener">' + esc(h.address) + ' ↗</a>' : '<a href="' + PG.mapUrl(h) + '" target="_blank" rel="noopener">Open in Maps ↗</a>') + '</div>' +
+    '<span class="hole-par">par<b>' + h.par + '</b></span></div><dl>' +
+    '<dt>Drink</dt><dd>' + esc(h.drink || 'Any drink') + '</dd>' + (h.soft ? '<dt>Soft</dt><dd>' + esc(h.soft) + ' (same par)</dd>' : '') +
+    (h.mode !== 'none' ? '<dt>' + PG.MODE_TAG[h.mode] + '</dt><dd>' + esc(h.activity) + (h.mode === 'required' ? ' (skip it: +' + h.strokes + ')' : '') + '</dd>' : '') +
+    (h.arrive ? '<dt>Arrive</dt><dd>by ' + h.arrive + '</dd>' : '') + (h.notes ? '<dt>Note</dt><dd>' + esc(h.notes) + '</dd>' : '') + '</dl></article>').join('');
+}
+
+function rules() {
+  const g = st.game, li = (a, mark) => a.map(x => '<li><span class="pen">' + mark + '</span>' + esc(x) + '</li>').join('');
+  return '<div class="bd rules"><h3>How to play</h3><ul>' + g.rules.how.map((x, i) => '<li><span class="pen">' + (i + 1) + '</span>' + esc(x) + '</li>').join('') +
+    '<li><span class="pen">' + (g.rules.how.length + 1) + '</span>Didn’t finish a drink? That scores par + ' + g.settings.dnf + '.</li></ul>' +
+    (g.penalties.length ? '<h3>Penalty strokes</h3><ul>' + g.penalties.map(p => '<li><span class="pen">+' + p.strokes + '</span>' + esc(p.label) + '</li>').join('') + '</ul>' : '') +
+    (g.rules.etiquette.length ? '<h3>Etiquette</h3><ul>' + li(g.rules.etiquette, '·') + '</ul>' : '') + '</div>';
+}
+
+app.addEventListener('click', ev => {
+  const t = ev.target.closest('[data-t]');
+  if (t) { tab = t.dataset.t; try { sessionStorage.setItem('pg_tab', tab); } catch (e) {} render(); return; }
+  if (ev.target.closest('#sw')) { if (confirm('Switch player on this phone? Your scores stay on the board.')) setMe(null); return; }
+  if (ev.target.closest('#bx')) { const b = PG.latestBroadcast(st); try { localStorage.setItem(dismissedKey, b.id); } catch (e) {} render(); return; }
+  if (ev.target.closest('#csv')) { ev.preventDefault(); PG.download((st.game.name || 'pub-golf').replace(/\W+/g, '-') + '-results.csv', PG.resultsCsv(st), 'text/csv'); return; }
+  const row = ev.target.closest('[data-h]');
+  if (row) {
+    const h = st.holes.find(x => x.id === row.dataset.h), p = me();
+    if (!h || !p) return;
+    if (st.game.status === 'finished') return PG.toast('The round is finished.');
+    const why = PG.blockReason(st, h);
+    if (why) return PG.toast(PG.errText(new Error(why)));
+    PG.sheet({ st, hole: h, entry: (st.scores[p.id] || {})[h.id],
+      onSave: e => PG.store.submit(p.id, h.id, e), onClear: () => PG.store.submit(p.id, h.id, null) });
+  }
+});
+
+PG.store.subscribe(v => { st = v; render(); });
+PG.store.get().then(v => { st = v; render(); });
+PG.liveStrip();
+})();
+</script>
+</body>
+</html>
